@@ -2,6 +2,10 @@
 
 一个批次的所有行在一个事务里写入，失败整体回滚；业务失败（空文件、契约无效）
 只落批次与阶段，方便页面上看到失败阶段并重试。
+
+两条额外边界：
+- 已清除原文的批次不再打开样例文件，重试改为按已落库规范化事实复算；
+- 整段运行按 batch_id 持锁，与原文清除串行，避免旧请求把原文写回。
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ from ..m2_contract import service as m2_service
 from ..m3_quality import service as m3_service
 from ..m4_intervals import restore as restore_mod
 from ..m5_months import allocate as allocate_mod
-from . import compare, history, resume
+from . import compare, history, locks, recompute, resume
 
 
 def _ms(start: float) -> int:
@@ -26,6 +30,12 @@ def _ms(start: float) -> int:
 
 def run(settings, store, *, sample: str | None = None, mode: str = "full") -> dict:
     name = sample or config.DEFAULT_SAMPLE
+    cleared = store.find_cleared_for_sample(name, settings.rule_version)
+    if cleared is not None:
+        # 该样例对应的批次原文已清除：不再读取可变的样例文件，按原批次复算
+        with locks.batch_lock(cleared["batch_id"]):
+            store.touch_batch(cleared["batch_id"], history.iso(history.now_utc()))
+            return recompute.run(store, cleared["batch_id"])
     path = m1_service.sample_path(settings, name)
     sample_bytes = path.read_bytes()
     meters_bytes = (Path(settings.sample_dir) / config.METERS_FILE).read_bytes()
@@ -33,7 +43,22 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
     digest = manifest.input_digest(name, sample_bytes, meters_bytes, prices_bytes,
                                    settings.rule_version)
     key = manifest.batch_key(name, digest)
+    batch_id = history.batch_id_for(key)
 
+    with locks.batch_lock(batch_id):
+        cleared = store.find_cleared_by_key(key)
+        if cleared is not None:
+            # 同一批次键的原文已清除：同样只复算，不把样例内容重新采信
+            store.touch_batch(cleared["batch_id"], history.iso(history.now_utc()))
+            return recompute.run(store, cleared["batch_id"])
+        return _run(settings, store, name=name, mode=mode, sample_bytes=sample_bytes,
+                    meters_bytes=meters_bytes, prices_bytes=prices_bytes,
+                    digest=digest, key=key, batch_id=batch_id)
+
+
+def _run(settings, store, *, name: str, mode: str, sample_bytes: bytes,
+         meters_bytes: bytes, prices_bytes: bytes, digest: str, key: str,
+         batch_id: str) -> dict:
     if mode != "force":
         existing = resume.find_replay(store, key)
         if existing is not None:
@@ -47,7 +72,6 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         digest=digest, rule_version=settings.rule_version,
         params={"sample": name, "mode": mode}, created_at=started_at,
         updated_at=started_at)
-    batch_id = batch["batch_id"]
 
     t0 = time.perf_counter()
     stages: list[dict] = []
@@ -166,6 +190,9 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         "encoding": ingested.encoding,
         "balanced": "是" if reconcile["all_balanced"] else "否",
         "reconcile_json": json.dumps(reconcile, ensure_ascii=False, default=str),
+        # 电价快照：清除原文后按原批次复算仍用当时的电价
+        "prices_json": json.dumps({key: str(value) for key, value in prices.items()},
+                                  ensure_ascii=False),
     }
     manifest_json = manifest.build(
         run_id=batch["run_id"], batch_id=batch_id, batch_key_value=key,
@@ -197,7 +224,7 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         "code": None, "flags": item.get("flags", []), "note": item.get("note", ""),
     } for item in (quality["valid"] + quality["estimate"])]
 
-    store.save_run(
+    blocked = store.save_run(
         batch={**batch, "status": "done", "finished_at": finished_at,
                "updated_at": finished_at},
         meters=[{
@@ -214,12 +241,16 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         stages=stages,
         totals=totals,
         manifest_json=manifest_json)
+    if blocked:
+        # 运行期间本批次被清除：本次结果只留规范化事实，原文不写回
+        store.apply_redaction(batch_id, stamp=finished_at)
 
     batch.update(status="done", finished_at=finished_at)
     return {
         "status": "done",
         "batch": batch,
         "idempotent_replay": False,
+        "redacted_write_blocked": blocked,
         "stages": stages,
         "totals": totals,
         "reconciliation": reconcile,
@@ -241,7 +272,12 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
 
 def retry(settings, store, batch_id: str) -> dict:
     plan = resume.retry_plan(store, batch_id)
-    return run(settings, store, sample=plan["sample"], mode="force")
+    with locks.batch_lock(batch_id):
+        state = store.redaction_state(batch_id)
+        if state is not None:
+            # 原文已清除：重试不得再读样例，按批次内规范化事实复算
+            return recompute.run(store, batch_id)
+        return run(settings, store, sample=plan["sample"], mode="force")
 
 
 def quarantine_rows(store, batch_id: str) -> list[dict]:
@@ -250,3 +286,6 @@ def quarantine_rows(store, batch_id: str) -> list[dict]:
 
 def reason_label(code: str) -> str:
     return reasons.label(code)
+
+
+__all__ = ["run", "retry", "quarantine_rows", "reason_label", "recompute"]

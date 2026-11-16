@@ -10,7 +10,7 @@ from ...web import Ctx, get_ctx, render
 from ..m1_ingest import service as m1_service
 from ..m2_contract import contract as contract_mod
 from ..m3_quality import quarantine as quarantine_mod
-from . import compare, resume, service
+from . import clear, compare, recompute, resume, service
 
 router = APIRouter(tags=["M6 批次与对账"])
 
@@ -42,6 +42,8 @@ def api_run(payload: dict | None = None, ctx: Ctx = Depends(get_ctx)) -> dict:
         "batch_key": batch["batch_key"],
         "input_digest": batch["input_digest"],
         "idempotent_replay": result["idempotent_replay"],
+        "redacted": bool(batch.get("redact_status")),
+        "recompute_source": result.get("recompute_source"),
         "stages": [_stage_payload(item) for item in result["stages"]],
         "totals": {key: str(value) for key, value in result["totals"].items()},
         "reconcile": compare.payload(reconcile),
@@ -57,7 +59,8 @@ def api_batches(limit: int = 20, ctx: Ctx = Depends(get_ctx)) -> dict:
         "sample": item["sample"], "status": item["status"],
         "created_at": item["created_at"], "finished_at": item["finished_at"],
         "input_digest": item["input_digest"], "rule_version": item["rule_version"],
-        "note": item["note"],
+        "note": item["note"], "redact_status": item.get("redact_status"),
+        "redacted_at": item.get("redacted_at"),
     } for item in batches]}
 
 
@@ -80,7 +83,40 @@ def api_retry(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
     return {"status": result["status"], "batch_id": result["batch"]["batch_id"],
             "run_id": result["batch"]["run_id"],
             "idempotent_replay": result["idempotent_replay"],
+            "recompute_source": result.get("recompute_source"),
             "stages": [_stage_payload(item) for item in result["stages"]]}
+
+
+@router.post("/api/batches/{batch_id}/redact")
+def api_redact(batch_id: str, payload: dict | None = None,
+               ctx: Ctx = Depends(get_ctx)) -> dict:
+    """原文清除只作用于这一个批次；已清除时幂等返回，不新增审计记录。"""
+    resume.require_batch(ctx.store, batch_id)
+    body = payload or {}
+    return clear.request_clear(ctx.store, batch_id,
+                               operator=str(body.get("operator") or ""),
+                               reason=str(body.get("reason") or ""))
+
+
+@router.post("/api/batches/{batch_id}/recompute")
+def api_recompute(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
+    """按原批次复算：只读已落库规范化事实，不读样例。"""
+    result = recompute.run(ctx.store, batch_id)
+    return {
+        "status": result["status"],
+        "batch_id": result["batch"]["batch_id"],
+        "run_id": result["batch"]["run_id"],
+        "recomputed": True,
+        "recompute_source": result["recompute_source"],
+        "totals": {key: str(value) for key, value in result["totals"].items()},
+        "reconcile": compare.payload(result["reconciliation"]),
+        "counts": result["counts"],
+    }
+
+
+@router.get("/api/batches/{batch_id}/redaction")
+def api_redaction(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
+    return clear.audit(ctx.store, batch_id)
 
 
 @router.get("/api/health")
@@ -120,10 +156,12 @@ def page_batches(request: Request, batch_id: str | None = None,
     reconcile = None
     counts: dict = {}
     manifest_summary: list[dict] = []
+    redaction_events: list[dict] = []
     if batch is not None:
         totals = ctx.store.load_totals(batch["batch_id"])
         reconcile = json.loads(totals.get("reconcile_json") or "null")
         counts = ctx.store.count_rows(batch["batch_id"])
+        redaction_events = clear.audit(ctx.store, batch["batch_id"])["events"]
         from ..m7_export import manifest_out
         manifest_summary = manifest_out.summary(
             manifest_out.build(ctx.store, batch,
@@ -133,4 +171,6 @@ def page_batches(request: Request, batch_id: str | None = None,
                   reconcile=compare.page_rows(reconcile),
                   balanced=None if reconcile is None else reconcile["all_balanced"],
                   counts=counts, manifest_summary=manifest_summary,
+                  redaction_events=redaction_events,
+                  redaction_state=(batch or {}).get("redact_status"),
                   the_batches=ctx.store.list_batches(limit=20))

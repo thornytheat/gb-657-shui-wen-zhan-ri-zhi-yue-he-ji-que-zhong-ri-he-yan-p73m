@@ -16,6 +16,7 @@ from .modules.m3_quality import handler as m3_handler
 from .modules.m4_intervals import handler as m4_handler
 from .modules.m5_months import handler as m5_handler
 from .modules.m6_batches import handler as m6_handler
+from .modules.m6_batches import clear
 from .modules.m7_export import handler as m7_handler
 
 MODULES = (m1_handler, m2_handler, m3_handler, m4_handler, m5_handler,
@@ -34,6 +35,8 @@ def create_app(settings: config.Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = Store(settings.db_path)
     app.state.ctx = web.Ctx(settings=settings, store=app.state.store)
+    # 上次进程在清除中途退出：启动即续做，幂等且不新增审计条目
+    clear.resume_pending(app.state.store)
     web.setup(app)
     app.mount("/static", StaticFiles(directory=str(web.STATIC_DIR)), name="static")
     for module in MODULES:

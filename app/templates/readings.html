@@ -8,6 +8,9 @@
     </p>
   </div>
   <div class="actions">
+    {% if redact_state == 'cleared' %}
+    <span class="badge badge-ok">原文已清除</span>
+    {% endif %}
     <label class="field-inline">
       <span class="field-label">样例</span>
       <select id="sample-select" class="select">
@@ -56,7 +59,7 @@
           <td class="mono">{{ row.meter_id }}</td>
           <td>{{ row.register|reg }}</td>
           <td class="mono">{{ row.read_at|localdt }}</td>
-          <td class="num mono">{{ row.reading_text }}</td>
+          <td class="num mono">{% if row.reading_text %}{{ row.reading_text }}{% elif redact_state %}<span class="unit">{{ '[已清除]' }}</span>{% endif %}</td>
           <td class="num mono">{{ row.reading_norm|dec }}</td>
           <td>{{ row.read_type|status }}</td>
           <td><span class="badge badge-{{ 'warn' if row.status == 'estimate' else 'ok' }}">{{ row.status|status }}</span></td>
@@ -88,7 +91,7 @@
           <td class="mono">{{ row.lineno }}</td>
           <td class="mono">{{ row.code }}</td>
           <td>{{ row.field }}</td>
-          <td class="mono cell-raw" title="{{ row.raw_value }}">{{ row.raw_value }}</td>
+          <td class="mono cell-raw" title="{{ row.raw_value }}">{% if row.raw_value %}{{ row.raw_value }}{% elif redact_state %}<span class="unit">{{ '[已清除]' }}</span>{% endif %}</td>
           <td class="mono">{{ row.meter_id }}</td>
           <td class="cell-note">{{ row.detail }}</td>
           <td><span class="badge badge-{{ 'bad' if row.level == 'error' else 'warn' }}">{{ row.level }}</span></td>

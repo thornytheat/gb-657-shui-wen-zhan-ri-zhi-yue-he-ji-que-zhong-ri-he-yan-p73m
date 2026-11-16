@@ -16,6 +16,7 @@ def replay_payload(batch: dict, store) -> dict:
         "batch": batch,
         "idempotent_replay": True,
         "replay_of": batch["batch_id"],
+        "redacted": bool(batch.get("redact_status")),
         "stages": stages,
         "totals": totals,
         "counts": store.count_rows(batch["batch_id"]),

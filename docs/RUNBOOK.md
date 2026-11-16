@@ -34,7 +34,8 @@ curl -sS -o /tmp/monthly.csv http://localhost:18216/api/export/monthly.csv
 ## 3 常见操作
 
 - **同输入重跑**：再点一次「开始处理」或 POST 同一 `sample`，命中批次键，返回同一 `batch_id`，行数与合计不变。
-- **强制重算**：POST `/api/batches/{batch_id}/retry`，用同一个 `sample` 重跑并覆盖该批次的行。
+- **强制重算**：POST `/api/batches/{batch_id}/retry`，用同一个 `sample` 重跑并覆盖该批次的行；若该批次已清除原文，改为按已落库事实复算。
+- **清除原文**：批次对账页点「清除原文」，或 POST `/api/batches/{batch_id}/redact`。清除后原始单元格不再出现在页面、接口与所有下载里，规范化读数、区间、月合计与四账不变；重试与同输入重跑只读批次内事实，不再读样例文件。
 - **换样例**：下拉框里其余样例分别是干净、GBK 中文表头、末行截断、空文件、仅表头、全空行、表头缺列。
 - **重跑测试**：`docker compose exec -T app python -m pytest -q`。
 - **清库**：`docker compose down -v` 删除命名卷；下次启动自动建表。
@@ -50,6 +51,7 @@ curl -sS -o /tmp/monthly.csv http://localhost:18216/api/export/monthly.csv
 | 422 `E_CONTRACT_INVALID` | `meters.csv` 重复表号、零倍率、换表目标缺失 | 修契约 |
 | 400 `E_SAMPLE_UNKNOWN` | 样例名不在白名单 | 用页面下拉框里的名字 |
 | 404 `E_BATCH_NOT_FOUND` | 还没有批次就导出 | 先跑一次处理 |
+| 409 `E_NO_FACTS` | 对没有已采信读数的批次（如空文件失败批次）发起清除或复算 | 先修输入重跑成功，再清除 |
 | 四账「不平」 | 逻辑或数据被改 | 看差额字段与说明，逐账核对 |
 
 日志：`docker compose logs -f app`（uvicorn 访问日志）。运行清单里的 `input_digest` 可用来确认两次运行读的是同一份输入。

@@ -75,10 +75,18 @@
 
 ## 9 原因码
 
-文件级 `E_*`：`E_EMPTY_FILE`、`E_HEADER_ONLY`、`E_ALL_BLANK`、`E_HEADER_INVALID`、`E_DECODE`、`E_SAMPLE_UNKNOWN`、`E_CONTRACT_INVALID`、`E_BATCH_NOT_FOUND`。
+文件级 `E_*`：`E_EMPTY_FILE`、`E_HEADER_ONLY`、`E_ALL_BLANK`、`E_HEADER_INVALID`、`E_DECODE`、`E_SAMPLE_UNKNOWN`、`E_CONTRACT_INVALID`、`E_BATCH_NOT_FOUND`、`E_NO_FACTS`（批次没有已采信读数，不能按原批次复算）。
 
 行级 `Q_*`：`Q_COLUMN_COUNT`、`Q_TRUNCATED_ROW`、`Q_MISSING_READING`、`Q_BAD_READING`、`Q_BAD_TIME`、`Q_UNKNOWN_METER`、`Q_BAD_REGISTER`、`Q_BAD_UNIT`、`Q_BAD_READ_TYPE`、`Q_NEGATIVE_READING`、`Q_EXCEEDS_CAPACITY`、`Q_REVERSE_READING`、`Q_DUPLICATE_CONFLICT`、`Q_METER_RETIRED`。
 
 标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`。
 
 唯一来源：`app/reasons.py`；页面与导出的原因文案都从它取。
+
+## 10 原文清除
+
+- 作用域：单个批次。请求落 `redactions` 审计表（`clearing` → `done`），批次上的 `redact_status` 同步为 `clearing` / `cleared`。
+- 清除内容：读数表的 `reading_text`、`unit_raw`、`note`，隔离表的 `raw_value`、`detail`；`detail` 改为「原因文案；原文已清除」。
+- 保留内容：`reading_norm`、`read_at`（UTC）、表号、寄存器、行号、原因码、区间、月度分摊、账单、四账与阶段计数。因此处理量与各账在清除前后逐项相等。
+- 复算：清除后的重试、同输入重跑、`POST /api/batches/{id}/recompute` 一律读批次内已落库事实（含表计契约快照与电价快照 `prices_json`），不再打开样例文件；`manifest.recompute_source = stored_facts`。
+- 并发与中断：清除与重试按 `batch_id` 串行；落库事务开始前复查 `redact_status`，旧请求的原文被拦截。审计先置 `clearing` 再抹原文，抹原文与置 `done` 同事务；进程中断后启动自动续做，重复清除不新增审计条目。

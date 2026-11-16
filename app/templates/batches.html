@@ -10,6 +10,12 @@
   <div class="actions">
     <a class="btn btn-ghost" href="/api/export/manifest.json">运行清单</a>
     <a class="btn btn-ghost" href="/api/batches">批次接口</a>
+    {% if batch %}
+    <button class="btn btn-ghost" id="recompute-button" type="button" data-batch="{{ batch.batch_id }}">按原批次复算</button>
+    <button class="btn btn-warn" id="redact-button" type="button" data-batch="{{ batch.batch_id }}"{% if batch.redact_status == 'cleared' %} disabled{% endif %}>
+      {% if batch.redact_status == 'cleared' %}原文已清除{% elif batch.redact_status == 'clearing' %}继续清除{% else %}清除原文{% endif %}
+    </button>
+    {% endif %}
   </div>
 </section>
 
@@ -53,6 +59,41 @@
 
 <section class="panel">
   <div class="panel-head">
+    <h2 class="panel-title">原文清除与审计</h2>
+    <span class="badge badge-{{ 'ok' if redaction_state == 'cleared' else ('warn' if redaction_state == 'clearing' else 'plain') }}">
+      {% if redaction_state == 'cleared' %}已清除{% elif redaction_state == 'clearing' %}清除中{% else %}保留原文{% endif %}
+    </span>
+  </div>
+  <p class="panel-sub cell-note" style="padding:6px 8px 0">
+    清除只抹掉原始文本单元格，规范化读数、UTC 时间、区间与月合计保持可复算；
+    依据为原批次已落库事实，不再读取可变的样例文件。
+  </p>
+  {% if redaction_events %}
+  <div class="table-wrap">
+    <table class="table table-compact">
+      <thead><tr><th>清除号</th><th>状态</th><th>申请</th><th>完成</th><th>操作人</th><th>原因</th><th>原文行</th></tr></thead>
+      <tbody>
+        {% for item in redaction_events %}
+        <tr>
+          <td class="mono">{{ item.redaction_id }}</td>
+          <td><span class="badge badge-{{ 'ok' if item.status == 'done' else 'warn' }}">{{ item.status }}</span></td>
+          <td class="mono">{{ item.requested_at|localdt }}</td>
+          <td class="mono">{{ item.completed_at|localdt }}</td>
+          <td>{{ item.operator }}</td>
+          <td class="cell-note">{{ item.reason }}</td>
+          <td class="mono">读数 {{ item.counts.readings_cleared or 0 }} · 隔离 {{ item.counts.quarantine_cleared or 0 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-line" style="padding:8px">还没有清除记录。</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2 class="panel-title">行数</h2>
     <span class="panel-sub mono">表计 {{ counts.meters }} · 读数 {{ counts.readings }}</span>
   </div>
@@ -74,13 +115,18 @@
   </div>
   <div class="table-wrap">
     <table class="table table-dense">
-      <thead><tr><th>批次</th><th>样例</th><th>状态</th><th>输入摘要</th><th>开始</th><th>操作</th></tr></thead>
+      <thead><tr><th>批次</th><th>样例</th><th>状态</th><th>原文</th><th>输入摘要</th><th>开始</th><th>操作</th></tr></thead>
       <tbody>
         {% for item in the_batches %}
         <tr>
           <td class="mono">{{ item.batch_id }}</td>
           <td class="mono">{{ item.sample }}</td>
           <td><span class="badge badge-{{ 'ok' if item.status == 'done' else 'bad' }}">{{ item.status|status }}</span></td>
+          <td>
+            {% if item.redact_status == 'cleared' %}<span class="badge badge-ok">已清除</span>
+            {% elif item.redact_status == 'clearing' %}<span class="badge badge-warn">清除中</span>
+            {% else %}<span class="badge badge-plain">保留</span>{% endif %}
+          </td>
           <td class="mono cell-raw" title="{{ item.input_digest }}">{{ item.input_digest[:12] }}</td>
           <td class="mono">{{ item.created_at|localdt }}</td>
           <td><button class="btn btn-ghost btn-sm retry-button" type="button" data-batch="{{ item.batch_id }}">重试</button></td>
